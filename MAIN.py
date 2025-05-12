@@ -13,18 +13,38 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
 import time
+import tkinter as tk
+from tkinter import filedialog
+import sys # To exit if files are not selected correctly
 
 # Ignorowanie ostrzeżeń dla czytelności
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 tf.get_logger().setLevel('ERROR') # Suppress TensorFlow warnings
 
-# --- Konfiguracja ---
-# Lista plików do przetworzenia
-FILE_PATHS = ['Apple_AAPL_2015_2025.csv',
-              'Bitcoin_BTCUSD_2015_2025.csv',
-              'SP500_SPY_2015_2025.csv']
+# --- Funkcja do wyboru plików CSV ---
+def select_csv_files(num_files=3):
+    """Otwiera okno dialogowe do wyboru określonej liczby plików CSV."""
+    root = tk.Tk()
+    root.withdraw() # Ukrycie głównego okna tkinter
+    print(f"Proszę wybrać dokładnie {num_files} pliki CSV w oknie dialogowym...")
+    file_paths = filedialog.askopenfilenames(
+        title=f"Wybierz {num_files} pliki CSV",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+    )
+    root.destroy() # Zamknięcie okna tkinter po wyborze
 
+    if len(file_paths) == num_files:
+        print(f"Wybrano pliki: {file_paths}")
+        return list(file_paths)
+    elif len(file_paths) == 0:
+        print("Nie wybrano żadnych plików. Przerywanie skryptu.")
+        sys.exit() # Zakończ skrypt, jeśli użytkownik anulował
+    else:
+        print(f"BŁĄD: Wybrano {len(file_paths)} plików, a wymagane jest {num_files}. Przerywanie skryptu.")
+        sys.exit() # Zakończ skrypt, jeśli wybrano złą liczbę plików
+
+# --- Konfiguracja ---
 # Zakres dat dla podziału trening/test
 TRAIN_END_DATE = '2023-12-31'
 TEST_START_DATE = '2024-01-01'
@@ -69,9 +89,21 @@ def create_sequences(X, y, time_steps=1):
         ys.append(y.iloc[i + time_steps])
     return np.array(Xs), np.array(ys)
 
+# --- Wybór Plików przez Użytkownika ---
+FILE_PATHS = select_csv_files(num_files=3)
+
 # --- Główna Pętla Przetwarzania ---
 for file_path in FILE_PATHS:
-    dataset_name = file_path.split('_')[0] # Pobranie nazwy datasetu z nazwy pliku
+    # Pobranie nazwy datasetu z nazwy pliku (prosta metoda)
+    try:
+        # Próba wydobycia nazwy przed pierwszym '_' lub '.'
+        base_name = file_path.split('/')[-1].split('\\')[-1] # Get filename
+        dataset_name = base_name.split('_')[0]
+        if '.' in dataset_name: # Handle cases like 'SP500.csv' if no underscore
+             dataset_name = dataset_name.split('.')[0]
+    except IndexError:
+        dataset_name = f"Dataset_{FILE_PATHS.index(file_path)+1}" # Fallback name
+
     print(f"\n{'='*30} Przetwarzanie: {dataset_name} ({file_path}) {'='*30}")
     start_time_dataset = time.time()
 
@@ -89,29 +121,46 @@ for file_path in FILE_PATHS:
 
     df.sort_index(inplace=True)
     # Proste uzupełnienie NaN w Volume
-    if df['Volume'].isnull().any():
+    if 'Volume' not in df.columns:
+        print("OSTRZEŻENIE: Brak kolumny 'Volume'. Zostanie zignorowana.")
+    elif df['Volume'].isnull().any():
         df['Volume'].fillna(method='ffill', inplace=True)
         df['Volume'].fillna(0, inplace=True)
 
     # --- 2. Inżynieria Cech ---
     print("2. Obliczanie wskaźników technicznych...")
     price_col = 'Close'
+    if price_col not in df.columns:
+        print(f"BŁĄD: Brak wymaganej kolumny '{price_col}' w pliku {file_path}.")
+        continue
+
     df_features = df.copy()
+    base_feature_columns = ['Open', 'High', 'Low', 'Close']
+    if 'Volume' in df.columns:
+        base_feature_columns.append('Volume')
+
+    # Sprawdzenie czy wymagane kolumny istnieją
+    missing_base_cols = [col for col in ['Open', 'High', 'Low', 'Close'] if col not in df.columns]
+    if missing_base_cols:
+        print(f"BŁĄD: Brak wymaganych kolumn {missing_base_cols} w pliku {file_path}.")
+        continue
+
+    feature_columns = list(base_feature_columns) # Start with base columns
     try:
+      # Obliczaj wskaźniki tylko jeśli istnieją odpowiednie kolumny
       df_features.ta.sma(length=14, append=True, col_names=('SMA_14',))
       df_features.ta.sma(length=50, append=True, col_names=('SMA_50',))
       df_features.ta.rsi(length=14, append=True, col_names=('RSI_14',))
       df_features.ta.macd(fast=12, slow=26, signal=9, append=True, col_names=('MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9'))
       df_features['Daily_Return'] = df_features[price_col].pct_change()
+      # Dodaj nazwy wskaźników do listy cech
+      indicator_cols = ['SMA_14', 'SMA_50', 'RSI_14', 'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9', 'Daily_Return']
+      feature_columns.extend(indicator_cols)
     except Exception as e:
-        print(f"BŁĄD podczas obliczania wskaźników: {e}")
-        # Kontynuuj bez wskaźników, jeśli wystąpi błąd
-        feature_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-    else:
-        feature_columns = ['Open', 'High', 'Low', 'Close', 'Volume',
-                           'SMA_14', 'SMA_50', 'RSI_14',
-                           'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9',
-                           'Daily_Return']
+        print(f"OSTRZEŻENIE: Błąd podczas obliczania wskaźników technicznych: {e}. Kontynuacja bez nich.")
+        # Użyjemy tylko podstawowych kolumn jeśli wskaźniki zawiodą
+        feature_columns = list(base_feature_columns)
+
 
     # --- 3. Tworzenie Zmiennej Docelowej (Regresja) ---
     print("3. Tworzenie zmiennej docelowej (cena zamknięcia następnego dnia)...")
@@ -120,6 +169,7 @@ for file_path in FILE_PATHS:
     # --- 4. Czyszczenie Danych ---
     print("4. Usuwanie wierszy z wartościami NaN...")
     initial_rows = df_features.shape[0]
+    # Używaj tylko istniejących kolumn cech
     existing_feature_columns = [col for col in feature_columns if col in df_features.columns]
     columns_to_check_for_nan = existing_feature_columns + ['Target_Close']
     df_cleaned = df_features.dropna(subset=columns_to_check_for_nan).copy()
@@ -159,11 +209,8 @@ for file_path in FILE_PATHS:
 
     # Skaler dla zmiennej docelowej (y) - WAŻNE dla LSTM
     target_scaler = MinMaxScaler()
-    # Skalujemy y_train i y_test osobno, ale scaler jest dopasowany tylko na y_train
-    # reshape(-1, 1) jest potrzebny, bo scaler oczekuje danych 2D
     y_train_scaled_np = target_scaler.fit_transform(y_train.values.reshape(-1, 1))
     y_test_scaled_np = target_scaler.transform(y_test.values.reshape(-1, 1))
-    # Konwersja z powrotem do Series dla spójności (opcjonalnie)
     y_train_scaled = pd.Series(y_train_scaled_np.flatten(), index=y_train.index)
     y_test_scaled = pd.Series(y_test_scaled_np.flatten(), index=y_test.index)
 
@@ -172,44 +219,63 @@ for file_path in FILE_PATHS:
     print("\n7. Ewaluacja Modelu Bazowego (Naive)...")
     # Przewiduj cenę jutro jako cenę dzisiaj
     y_pred_naive = df_test[price_col].shift(1) # Używamy ceny zamknięcia z dnia poprzedniego
-    y_pred_naive.fillna(method='bfill', inplace=True) # Wypełnienie pierwszej wartości NaN
-    evaluate_regression_model('Naive Baseline', dataset_name, y_test, y_pred_naive)
+    # Sprawdzenie czy są NaN po shifcie (powinien być tylko pierwszy)
+    if y_pred_naive.isnull().any():
+        first_valid_index = y_pred_naive.first_valid_index()
+        if first_valid_index is not None:
+             # Wypełnij NaN wartością pierwszej dostępnej prognozy (lub inną strategią)
+             y_pred_naive.fillna(y_pred_naive[first_valid_index], inplace=True)
+        else: # Jeśli cały y_pred_naive jest NaN (bardzo mało prawdopodobne)
+             y_pred_naive.fillna(0, inplace=True) # Wypełnij zerami
+
+    # Upewnij się, że długości pasują (y_test może być krótszy jeśli ostatnie dni miały NaN)
+    common_index = y_test.index.intersection(y_pred_naive.index)
+    y_test_eval_naive = y_test.loc[common_index]
+    y_pred_naive_eval = y_pred_naive.loc[common_index]
+
+    if not y_test_eval_naive.empty:
+        evaluate_regression_model('Naive Baseline', dataset_name, y_test_eval_naive, y_pred_naive_eval)
+    else:
+        print("Brak wspólnych danych do ewaluacji modelu Naive.")
+        all_results.append({'Dataset': dataset_name, 'Model': 'Naive Baseline', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
 
 
     # --- 8. Model ARIMA ---
     print("\n8. Trenowanie i Ewaluacja Modelu ARIMA...")
     start_time_arima = time.time()
     try:
-        # Używamy auto_arima do znalezienia najlepszych parametrów (p,d,q) dla danych treningowych 'Close'
-        # Skupiamy się na prognozie samej ceny, bez dodatkowych wskaźników (model univariate)
         print("   Uruchamianie auto_arima (może chwilę potrwać)...")
         auto_model = auto_arima(y_train, # Używamy nieskalowanego y_train
-                                seasonal=False, # Zakładamy brak sezonowości (można zmienić na True jeśli podejrzewamy)
+                                seasonal=False,
                                 stepwise=True,
                                 suppress_warnings=True,
                                 error_action='ignore',
-                                trace=False, # Ustaw na True, aby zobaczyć kroki auto_arima
-                                max_p=5, max_q=5, max_d=2) # Ograniczenie przestrzeni poszukiwań
+                                trace=False,
+                                max_p=5, max_q=5, max_d=2)
 
         print(f"   Wybrane parametry ARIMA: {auto_model.order}")
 
-        # Trenowanie finalnego modelu ARIMA na danych treningowych z najlepszymi parametrami
-        # Używamy statsmodels.tsa.arima.model.ARIMA
         arima_model = ARIMA(y_train, order=auto_model.order)
         arima_result = arima_model.fit()
         print("   Model ARIMA wytrenowany.")
 
-        # Generowanie prognoz na okres testowy
-        # forecast() jest preferowane dla prognoz poza próbą
         y_pred_arima = arima_result.forecast(steps=len(y_test))
-        # Upewniamy się, że indeksy pasują
-        y_pred_arima.index = y_test.index
+        y_pred_arima.index = y_test.index # Dopasowanie indeksu
 
-        evaluate_regression_model('ARIMA', dataset_name, y_test, y_pred_arima)
+        # Ewaluacja
+        common_index_arima = y_test.index.intersection(y_pred_arima.index)
+        y_test_eval_arima = y_test.loc[common_index_arima]
+        y_pred_arima_eval = y_pred_arima.loc[common_index_arima]
+
+        if not y_test_eval_arima.empty:
+             evaluate_regression_model('ARIMA', dataset_name, y_test_eval_arima, y_pred_arima_eval)
+        else:
+             print("Brak wspólnych danych do ewaluacji modelu ARIMA.")
+             all_results.append({'Dataset': dataset_name, 'Model': 'ARIMA', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
+
 
     except Exception as e:
         print(f"   BŁĄD podczas trenowania/predykcji ARIMA: {e}")
-        # Zapisanie pustych wyników, jeśli ARIMA się nie powiedzie
         all_results.append({'Dataset': dataset_name, 'Model': 'ARIMA', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
 
     print(f"   Czas ARIMA: {time.time() - start_time_arima:.2f} s")
@@ -219,7 +285,6 @@ for file_path in FILE_PATHS:
     print("\n9. Trenowanie i Ewaluacja Modelu LSTM dla Regresji...")
     start_time_lstm = time.time()
     # Tworzenie sekwencji dla LSTM
-    # Używamy przeskalowanych cech (X) i przeskalowanego targetu (y)
     X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train_scaled, TIME_STEPS)
     X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test_scaled, TIME_STEPS)
 
@@ -236,16 +301,12 @@ for file_path in FILE_PATHS:
         lstm_model.add(Dropout(0.2))
         lstm_model.add(LSTM(units=50, return_sequences=False))
         lstm_model.add(Dropout(0.2))
-        # Warstwa wyjściowa Dense z 1 neuronem (bez aktywacji lub liniowa dla regresji)
         lstm_model.add(Dense(units=1))
 
-        # Kompilacja modelu dla regresji
-        lstm_model.compile(optimizer='adam', loss='mean_squared_error') # MSE jako funkcja straty
+        lstm_model.compile(optimizer='adam', loss='mean_squared_error')
 
-        # Callback EarlyStopping monitorujący val_loss
         early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
 
-        # Trening modelu
         print("   Rozpoczynanie treningu LSTM...")
         history = lstm_model.fit(
             X_train_seq, y_train_seq,
@@ -254,32 +315,30 @@ for file_path in FILE_PATHS:
             validation_split=0.1,
             callbacks=[early_stopping],
             shuffle=False,
-            verbose=0 # Wyłącz logowanie epok dla czystszego outputu
+            verbose=0
         )
         print("   Zakończono trening LSTM.")
 
-        # Predykcje na danych testowych (wynik będzie przeskalowany)
         y_pred_lstm_scaled = lstm_model.predict(X_test_seq, verbose=0)
-
-        # Odwrócenie skalowania predykcji do oryginalnej skali cen
         y_pred_lstm = target_scaler.inverse_transform(y_pred_lstm_scaled).flatten()
 
-        # Przygotowanie y_test do porównania (oryginalne wartości, dopasowane do długości predykcji)
-        # y_test_seq odpowiada y_pred_lstm
-        # Potrzebujemy oryginalnych wartości y_test odpowiadających y_test_seq
-        # Indeks y_test_seq zaczyna się od TIME_STEPS, więc bierzemy y_test od tego miejsca
-        y_test_eval_lstm = y_test.iloc[TIME_STEPS:TIME_STEPS+len(y_pred_lstm)]
+        # Przygotowanie y_test do porównania
+        # Indeks y_test dla ewaluacji LSTM zaczyna się od TIME_STEPS
+        start_index_lstm_eval = TIME_STEPS
+        end_index_lstm_eval = start_index_lstm_eval + len(y_pred_lstm)
+        # Sprawdź, czy indeksy są w granicach y_test
+        if end_index_lstm_eval <= len(y_test):
+             y_test_eval_lstm = y_test.iloc[start_index_lstm_eval:end_index_lstm_eval]
+             # Upewnij się, że długości pasują dokładnie
+             if len(y_test_eval_lstm) == len(y_pred_lstm):
+                  evaluate_regression_model('LSTM', dataset_name, y_test_eval_lstm, y_pred_lstm)
+             else:
+                  print(f"   OSTRZEŻENIE: Niezgodność długości y_test_eval_lstm ({len(y_test_eval_lstm)}) i y_pred_lstm ({len(y_pred_lstm)}). Pomijanie ewaluacji LSTM.")
+                  all_results.append({'Dataset': dataset_name, 'Model': 'LSTM', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
+        else:
+             print(f"   OSTRZEŻENIE: Indeks poza zakresem dla ewaluacji LSTM. Długość y_test: {len(y_test)}, wymagany zakres: {start_index_lstm_eval}-{end_index_lstm_eval}. Pomijanie ewaluacji LSTM.")
+             all_results.append({'Dataset': dataset_name, 'Model': 'LSTM', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
 
-        # Ewaluacja na oryginalnej skali
-        evaluate_regression_model('LSTM', dataset_name, y_test_eval_lstm, y_pred_lstm)
-
-        # Opcjonalnie: Wykres historii treningu LSTM
-        # plt.figure(figsize=(6, 3))
-        # plt.plot(history.history['loss'], label='Training Loss')
-        # plt.plot(history.history['val_loss'], label='Validation Loss')
-        # plt.title(f'LSTM Training & Validation Loss - {dataset_name}')
-        # plt.legend()
-        # plt.show()
 
     print(f"   Czas LSTM: {time.time() - start_time_lstm:.2f} s")
     print(f"Czas przetwarzania dla {dataset_name}: {time.time() - start_time_dataset:.2f} s")
@@ -292,32 +351,34 @@ if not all_results:
     print("Brak wyników do podsumowania.")
 else:
     results_df = pd.DataFrame(all_results)
-    # Formatowanie dla lepszej czytelności
     results_df = results_df.round(4) # Zaokrąglenie metryk
     print(results_df)
 
     # --- Wizualizacja Porównawcza ---
     print("\nGenerowanie wykresów porównawczych...")
-    plt.style.use('seaborn-v0_8-darkgrid') # Ustawienie stylu wykresów
+    # Sprawdzenie czy są dane do wygenerowania wykresów
+    if not results_df.dropna(subset=['RMSE', 'MAE']).empty:
+        plt.style.use('seaborn-v0_8-darkgrid')
 
-    # Porównanie RMSE dla różnych modeli i datasetów
-    plt.figure(figsize=(12, 6))
-    sns.barplot(data=results_df, x='Dataset', y='RMSE', hue='Model', palette='viridis')
-    plt.title('Porównanie RMSE modeli dla różnych zbiorów danych')
-    plt.ylabel('Root Mean Squared Error (RMSE)')
-    plt.xlabel('Zbiór danych')
-    plt.xticks(rotation=0)
-    plt.tight_layout()
-    plt.show()
+        plt.figure(figsize=(12, 6))
+        sns.barplot(data=results_df, x='Dataset', y='RMSE', hue='Model', palette='viridis')
+        plt.title('Porównanie RMSE modeli dla różnych zbiorów danych')
+        plt.ylabel('Root Mean Squared Error (RMSE)')
+        plt.xlabel('Zbiór danych')
+        plt.xticks(rotation=0)
+        plt.tight_layout()
+        plt.show()
 
-    # Porównanie MAE dla różnych modeli i datasetów
-    plt.figure(figsize=(12, 6))
-    sns.barplot(data=results_df, x='Dataset', y='MAE', hue='Model', palette='plasma')
-    plt.title('Porównanie MAE modeli dla różnych zbiorów danych')
-    plt.ylabel('Mean Absolute Error (MAE)')
-    plt.xlabel('Zbiór danych')
-    plt.xticks(rotation=0)
-    plt.tight_layout()
-    plt.show()
+        plt.figure(figsize=(12, 6))
+        sns.barplot(data=results_df, x='Dataset', y='MAE', hue='Model', palette='plasma')
+        plt.title('Porównanie MAE modeli dla różnych zbiorów danych')
+        plt.ylabel('Mean Absolute Error (MAE)')
+        plt.xlabel('Zbiór danych')
+        plt.xticks(rotation=0)
+        plt.tight_layout()
+        plt.show()
+    else:
+        print("Brak wystarczających danych liczbowych do wygenerowania wykresów porównawczych.")
+
 
 print("\nAnaliza zakończona.")
