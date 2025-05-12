@@ -107,37 +107,68 @@ for file_path in FILE_PATHS:
     print(f"\n{'='*30} Przetwarzanie: {dataset_name} ({file_path}) {'='*30}")
     start_time_dataset = time.time()
 
-    # --- 1. Wczytanie Danych ---
+    # --- 1. Wczytanie Danych (ZMODYFIKOWANE) ---
     print("1. Wczytywanie danych...")
     try:
-        df = pd.read_csv(file_path, parse_dates=['Date'], index_col='Date')
-        print(f"Wczytano dane. Rozmiar: {df.shape}")
+        # Wczytaj CSV:
+        # header=0: Użyj pierwszego wiersza (np. Price,Close,...) jako nagłówków.
+        # skiprows=[1, 2]: Pomiń drugi (np. Ticker) i trzeci (np. Date,,,) wiersz - DOSTOSUJ jeśli trzeba.
+        # index_col=0: Użyj pierwszej kolumny (tej pod nagłówkiem 'Price', która zawiera daty) jako indeksu.
+        # parse_dates=True: Spróbuj przekonwertować wartości w kolumnie indeksu na daty.
+        # Sprawdź, czy plik faktycznie ma 3 linie nagłówka do pominięcia
+        # Można to zrobić bardziej elastycznie, np. szukając pierwszego wiersza z danymi
+        df = pd.read_csv(
+            file_path,
+            header=0,       # Pierwszy wiersz to nagłówki kolumn
+            skiprows=[1, 2],  # Pomiń wiersze 1 i 2 (licząc od 0)
+            index_col=0,    # Pierwsza kolumna (indeks 0) zawiera daty
+            parse_dates=True # Próbuj sparsować indeks jako daty
+        )
+        # Zmień nazwę indeksu na 'Date' dla spójności z resztą kodu
+        df.index.name = 'Date'
+
+        # Sprawdź, czy wczytano oczekiwane kolumny (Close, High, Low, Open, Volume)
+        # Zmieniono nazwy kolumn na te z przykładu użytkownika
+        required_cols_mapping = {'Close': 'Close', 'High': 'High', 'Low': 'Low', 'Open': 'Open', 'Volume': 'Volume'}
+        # Sprawdź, czy kolumny istnieją
+        missing_cols = [col for col in required_cols_mapping.values() if col not in df.columns]
+        if missing_cols:
+             print(f"OSTRZEŻENIE: Brak kolumn {missing_cols} w pliku {file_path}. Dostępne kolumny: {df.columns.tolist()}")
+             # Można dodać bardziej rygorystyczne sprawdzanie i przerwanie
+
+        print(f"Wczytano dane z {file_path}. Rozmiar: {df.shape}")
+        print("Pierwsze 5 wierszy wczytanych danych:")
+        print(df.head())
+
     except FileNotFoundError:
         print(f"BŁĄD: Plik {file_path} nie został znaleziony.")
         continue # Przejdź do następnego pliku
     except Exception as e:
-        print(f"BŁĄD podczas wczytywania pliku CSV: {e}")
+        print(f"BŁĄD podczas wczytywania lub przetwarzania pliku CSV {file_path}: {e}")
+        # Możliwe błędy: zły format daty, nieprawidłowa liczba wierszy do pominięcia itp.
         continue
 
     df.sort_index(inplace=True)
     # Proste uzupełnienie NaN w Volume
-    if 'Volume' not in df.columns:
-        print("OSTRZEŻENIE: Brak kolumny 'Volume'. Zostanie zignorowana.")
-    elif df['Volume'].isnull().any():
-        df['Volume'].fillna(method='ffill', inplace=True)
-        df['Volume'].fillna(0, inplace=True)
+    volume_col = 'Volume' # Używamy nazwy kolumny z mapowania
+    if volume_col not in df.columns:
+        print(f"OSTRZEŻENIE: Brak kolumny '{volume_col}'. Zostanie zignorowana.")
+    elif df[volume_col].isnull().any():
+        df[volume_col].fillna(method='ffill', inplace=True)
+        df[volume_col].fillna(0, inplace=True)
 
     # --- 2. Inżynieria Cech ---
     print("2. Obliczanie wskaźników technicznych...")
-    price_col = 'Close'
+    price_col = 'Close' # Nadal używamy 'Close' jako głównej ceny
     if price_col not in df.columns:
         print(f"BŁĄD: Brak wymaganej kolumny '{price_col}' w pliku {file_path}.")
         continue
 
     df_features = df.copy()
+    # Używamy nazw kolumn z mapowania
     base_feature_columns = ['Open', 'High', 'Low', 'Close']
-    if 'Volume' in df.columns:
-        base_feature_columns.append('Volume')
+    if volume_col in df.columns:
+        base_feature_columns.append(volume_col)
 
     # Sprawdzenie czy wymagane kolumny istnieją
     missing_base_cols = [col for col in ['Open', 'High', 'Low', 'Close'] if col not in df.columns]
@@ -148,10 +179,11 @@ for file_path in FILE_PATHS:
     feature_columns = list(base_feature_columns) # Start with base columns
     try:
       # Obliczaj wskaźniki tylko jeśli istnieją odpowiednie kolumny
-      df_features.ta.sma(length=14, append=True, col_names=('SMA_14',))
-      df_features.ta.sma(length=50, append=True, col_names=('SMA_50',))
-      df_features.ta.rsi(length=14, append=True, col_names=('RSI_14',))
-      df_features.ta.macd(fast=12, slow=26, signal=9, append=True, col_names=('MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9'))
+      df_features.ta.sma(close=price_col, length=14, append=True, col_names=('SMA_14',)) # Podajemy kolumnę 'Close'
+      df_features.ta.sma(close=price_col, length=50, append=True, col_names=('SMA_50',))
+      df_features.ta.rsi(close=price_col, length=14, append=True, col_names=('RSI_14',))
+      # MACD wymaga kolumny 'close', pandas-ta powinien ją znaleźć automatycznie jeśli nazywa się 'Close'
+      df_features.ta.macd(close=price_col, fast=12, slow=26, signal=9, append=True, col_names=('MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9'))
       df_features['Daily_Return'] = df_features[price_col].pct_change()
       # Dodaj nazwy wskaźników do listy cech
       indicator_cols = ['SMA_14', 'SMA_50', 'RSI_14', 'MACD_12_26_9', 'MACDh_12_26_9', 'MACDs_12_26_9', 'Daily_Return']
@@ -186,16 +218,27 @@ for file_path in FILE_PATHS:
     df_test = df_cleaned[TEST_START_DATE:]
 
     if df_train.empty or df_test.empty:
-        print(f"BŁĄD: Jeden ze zbiorów (treningowy: {df_train.shape[0]}, testowy: {df_test.shape[0]}) jest pusty.")
-        continue
+        # Spróbujmy elastyczniej wybrać datę podziału, jeśli domyślna nie działa
+        if df_train.empty and not df_cleaned.empty:
+             split_index = int(len(df_cleaned) * 0.8) # Podział 80/20
+             df_train = df_cleaned.iloc[:split_index]
+             df_test = df_cleaned.iloc[split_index:]
+             print(f"OSTRZEŻENIE: Domyślna data podziału nie zadziałała. Użyto podziału 80/20.")
+        elif df_test.empty:
+             print(f"OSTRZEŻENIE: Brak danych testowych po {TEST_START_DATE}. Sprawdź zakres dat.")
+             continue # Nie ma sensu kontynuować bez danych testowych
+        else:
+             print(f"BŁĄD: Jeden ze zbiorów (treningowy: {df_train.shape[0]}, testowy: {df_test.shape[0]}) jest pusty po podziale.")
+             continue
 
     print(f"Rozmiar zbioru treningowego: {df_train.shape}")
     print(f"Rozmiar zbioru testowego: {df_test.shape}")
 
     # Oddzielenie cech (X) i targetu (y)
-    X_train = df_train[existing_feature_columns]
+    # Upewnijmy się, że używamy tylko istniejących kolumn
+    X_train = df_train[[col for col in existing_feature_columns if col in df_train.columns]]
     y_train = df_train['Target_Close']
-    X_test = df_test[existing_feature_columns]
+    X_test = df_test[[col for col in existing_feature_columns if col in df_test.columns]]
     y_test = df_test['Target_Close']
 
     # --- 6. Skalowanie Cech i Targetu (dla LSTM) ---
@@ -204,8 +247,8 @@ for file_path in FILE_PATHS:
     feature_scaler = MinMaxScaler()
     X_train_scaled_np = feature_scaler.fit_transform(X_train.values)
     X_test_scaled_np = feature_scaler.transform(X_test.values)
-    X_train_scaled = pd.DataFrame(X_train_scaled_np, columns=existing_feature_columns, index=X_train.index)
-    X_test_scaled = pd.DataFrame(X_test_scaled_np, columns=existing_feature_columns, index=X_test.index)
+    X_train_scaled = pd.DataFrame(X_train_scaled_np, columns=X_train.columns, index=X_train.index) # Użyj X_train.columns
+    X_test_scaled = pd.DataFrame(X_test_scaled_np, columns=X_test.columns, index=X_test.index)   # Użyj X_test.columns
 
     # Skaler dla zmiennej docelowej (y) - WAŻNE dla LSTM
     target_scaler = MinMaxScaler()
@@ -230,14 +273,14 @@ for file_path in FILE_PATHS:
 
     # Upewnij się, że długości pasują (y_test może być krótszy jeśli ostatnie dni miały NaN)
     common_index = y_test.index.intersection(y_pred_naive.index)
-    y_test_eval_naive = y_test.loc[common_index]
-    y_pred_naive_eval = y_pred_naive.loc[common_index]
-
-    if not y_test_eval_naive.empty:
-        evaluate_regression_model('Naive Baseline', dataset_name, y_test_eval_naive, y_pred_naive_eval)
+    if common_index.empty:
+         print("Brak wspólnych danych (indeksów) do ewaluacji modelu Naive.")
+         all_results.append({'Dataset': dataset_name, 'Model': 'Naive Baseline', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
     else:
-        print("Brak wspólnych danych do ewaluacji modelu Naive.")
-        all_results.append({'Dataset': dataset_name, 'Model': 'Naive Baseline', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
+        y_test_eval_naive = y_test.loc[common_index]
+        y_pred_naive_eval = y_pred_naive.loc[common_index]
+        evaluate_regression_model('Naive Baseline', dataset_name, y_test_eval_naive, y_pred_naive_eval)
+
 
 
     # --- 8. Model ARIMA ---
@@ -245,6 +288,10 @@ for file_path in FILE_PATHS:
     start_time_arima = time.time()
     try:
         print("   Uruchamianie auto_arima (może chwilę potrwać)...")
+        # Sprawdzenie czy y_train nie jest puste
+        if y_train.empty:
+            raise ValueError("Zbiór treningowy y_train jest pusty dla ARIMA.")
+
         auto_model = auto_arima(y_train, # Używamy nieskalowanego y_train
                                 seasonal=False,
                                 stepwise=True,
@@ -259,19 +306,22 @@ for file_path in FILE_PATHS:
         arima_result = arima_model.fit()
         print("   Model ARIMA wytrenowany.")
 
+        # Sprawdzenie czy y_test nie jest puste
+        if y_test.empty:
+            raise ValueError("Zbiór testowy y_test jest pusty dla prognozy ARIMA.")
+
         y_pred_arima = arima_result.forecast(steps=len(y_test))
         y_pred_arima.index = y_test.index # Dopasowanie indeksu
 
         # Ewaluacja
         common_index_arima = y_test.index.intersection(y_pred_arima.index)
-        y_test_eval_arima = y_test.loc[common_index_arima]
-        y_pred_arima_eval = y_pred_arima.loc[common_index_arima]
-
-        if not y_test_eval_arima.empty:
-             evaluate_regression_model('ARIMA', dataset_name, y_test_eval_arima, y_pred_arima_eval)
+        if common_index_arima.empty:
+            print("Brak wspólnych danych (indeksów) do ewaluacji modelu ARIMA.")
+            all_results.append({'Dataset': dataset_name, 'Model': 'ARIMA', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
         else:
-             print("Brak wspólnych danych do ewaluacji modelu ARIMA.")
-             all_results.append({'Dataset': dataset_name, 'Model': 'ARIMA', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
+            y_test_eval_arima = y_test.loc[common_index_arima]
+            y_pred_arima_eval = y_pred_arima.loc[common_index_arima]
+            evaluate_regression_model('ARIMA', dataset_name, y_test_eval_arima, y_pred_arima_eval)
 
 
     except Exception as e:
@@ -285,59 +335,63 @@ for file_path in FILE_PATHS:
     print("\n9. Trenowanie i Ewaluacja Modelu LSTM dla Regresji...")
     start_time_lstm = time.time()
     # Tworzenie sekwencji dla LSTM
-    X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train_scaled, TIME_STEPS)
-    X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test_scaled, TIME_STEPS)
-
-    print(f"   Kształt sekwencji treningowych X: {X_train_seq.shape}, y: {y_train_seq.shape}")
-    print(f"   Kształt sekwencji testowych X: {X_test_seq.shape}, y: {y_test_seq.shape}")
-
-    if X_train_seq.shape[0] < 10 or X_test_seq.shape[0] == 0:
-        print(f"   BŁĄD: Niewystarczająca ilość sekwencji dla LSTM.")
-        all_results.append({'Dataset': dataset_name, 'Model': 'LSTM', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
+    # Upewnijmy się, że X_train_scaled i y_train_scaled nie są puste
+    if X_train_scaled.empty or y_train_scaled.empty:
+         print(f"   BŁĄD: Puste dane treningowe (X lub y) dla sekwencji LSTM.")
+         all_results.append({'Dataset': dataset_name, 'Model': 'LSTM', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
     else:
-        # Definicja modelu LSTM dla regresji
-        lstm_model = Sequential()
-        lstm_model.add(LSTM(units=50, return_sequences=True, input_shape=(X_train_seq.shape[1], X_train_seq.shape[2])))
-        lstm_model.add(Dropout(0.2))
-        lstm_model.add(LSTM(units=50, return_sequences=False))
-        lstm_model.add(Dropout(0.2))
-        lstm_model.add(Dense(units=1))
+        X_train_seq, y_train_seq = create_sequences(X_train_scaled, y_train_scaled, TIME_STEPS)
+        X_test_seq, y_test_seq = create_sequences(X_test_scaled, y_test_scaled, TIME_STEPS)
 
-        lstm_model.compile(optimizer='adam', loss='mean_squared_error')
+        print(f"   Kształt sekwencji treningowych X: {X_train_seq.shape}, y: {y_train_seq.shape}")
+        print(f"   Kształt sekwencji testowych X: {X_test_seq.shape}, y: {y_test_seq.shape}")
 
-        early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-
-        print("   Rozpoczynanie treningu LSTM...")
-        history = lstm_model.fit(
-            X_train_seq, y_train_seq,
-            epochs=LSTM_EPOCHS,
-            batch_size=LSTM_BATCH_SIZE,
-            validation_split=0.1,
-            callbacks=[early_stopping],
-            shuffle=False,
-            verbose=0
-        )
-        print("   Zakończono trening LSTM.")
-
-        y_pred_lstm_scaled = lstm_model.predict(X_test_seq, verbose=0)
-        y_pred_lstm = target_scaler.inverse_transform(y_pred_lstm_scaled).flatten()
-
-        # Przygotowanie y_test do porównania
-        # Indeks y_test dla ewaluacji LSTM zaczyna się od TIME_STEPS
-        start_index_lstm_eval = TIME_STEPS
-        end_index_lstm_eval = start_index_lstm_eval + len(y_pred_lstm)
-        # Sprawdź, czy indeksy są w granicach y_test
-        if end_index_lstm_eval <= len(y_test):
-             y_test_eval_lstm = y_test.iloc[start_index_lstm_eval:end_index_lstm_eval]
-             # Upewnij się, że długości pasują dokładnie
-             if len(y_test_eval_lstm) == len(y_pred_lstm):
-                  evaluate_regression_model('LSTM', dataset_name, y_test_eval_lstm, y_pred_lstm)
-             else:
-                  print(f"   OSTRZEŻENIE: Niezgodność długości y_test_eval_lstm ({len(y_test_eval_lstm)}) i y_pred_lstm ({len(y_pred_lstm)}). Pomijanie ewaluacji LSTM.")
-                  all_results.append({'Dataset': dataset_name, 'Model': 'LSTM', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
+        if X_train_seq.shape[0] < 10 or X_test_seq.shape[0] == 0:
+            print(f"   BŁĄD: Niewystarczająca ilość sekwencji dla LSTM.")
+            all_results.append({'Dataset': dataset_name, 'Model': 'LSTM', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
         else:
-             print(f"   OSTRZEŻENIE: Indeks poza zakresem dla ewaluacji LSTM. Długość y_test: {len(y_test)}, wymagany zakres: {start_index_lstm_eval}-{end_index_lstm_eval}. Pomijanie ewaluacji LSTM.")
-             all_results.append({'Dataset': dataset_name, 'Model': 'LSTM', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
+            # Definicja modelu LSTM dla regresji
+            lstm_model = Sequential()
+            lstm_model.add(LSTM(units=50, return_sequences=True, input_shape=(X_train_seq.shape[1], X_train_seq.shape[2])))
+            lstm_model.add(Dropout(0.2))
+            lstm_model.add(LSTM(units=50, return_sequences=False))
+            lstm_model.add(Dropout(0.2))
+            lstm_model.add(Dense(units=1))
+
+            lstm_model.compile(optimizer='adam', loss='mean_squared_error')
+
+            early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
+            print("   Rozpoczynanie treningu LSTM...")
+            history = lstm_model.fit(
+                X_train_seq, y_train_seq,
+                epochs=LSTM_EPOCHS,
+                batch_size=LSTM_BATCH_SIZE,
+                validation_split=0.1,
+                callbacks=[early_stopping],
+                shuffle=False,
+                verbose=0
+            )
+            print("   Zakończono trening LSTM.")
+
+            y_pred_lstm_scaled = lstm_model.predict(X_test_seq, verbose=0)
+            y_pred_lstm = target_scaler.inverse_transform(y_pred_lstm_scaled).flatten()
+
+            # Przygotowanie y_test do porównania
+            start_index_lstm_eval = TIME_STEPS
+            end_index_lstm_eval = start_index_lstm_eval + len(y_pred_lstm)
+
+            # Sprawdź, czy y_test nie jest puste i czy indeksy są poprawne
+            if not y_test.empty and end_index_lstm_eval <= len(y_test):
+                 y_test_eval_lstm = y_test.iloc[start_index_lstm_eval:end_index_lstm_eval]
+                 if len(y_test_eval_lstm) == len(y_pred_lstm):
+                      evaluate_regression_model('LSTM', dataset_name, y_test_eval_lstm, y_pred_lstm)
+                 else:
+                      print(f"   OSTRZEŻENIE: Niezgodność długości y_test_eval_lstm ({len(y_test_eval_lstm)}) i y_pred_lstm ({len(y_pred_lstm)}). Pomijanie ewaluacji LSTM.")
+                      all_results.append({'Dataset': dataset_name, 'Model': 'LSTM', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
+            else:
+                 print(f"   OSTRZEŻENIE: Indeks poza zakresem lub pusty y_test dla ewaluacji LSTM. Długość y_test: {len(y_test)}, wymagany zakres: {start_index_lstm_eval}-{end_index_lstm_eval}. Pomijanie ewaluacji LSTM.")
+                 all_results.append({'Dataset': dataset_name, 'Model': 'LSTM', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
 
 
     print(f"   Czas LSTM: {time.time() - start_time_lstm:.2f} s")
@@ -358,7 +412,11 @@ else:
     print("\nGenerowanie wykresów porównawczych...")
     # Sprawdzenie czy są dane do wygenerowania wykresów
     if not results_df.dropna(subset=['RMSE', 'MAE']).empty:
-        plt.style.use('seaborn-v0_8-darkgrid')
+        try:
+            plt.style.use('seaborn-v0_8-darkgrid') # Użyj dostępnego stylu
+        except OSError:
+            print("OSTRZEŻENIE: Styl 'seaborn-v0_8-darkgrid' niedostępny, używam stylu domyślnego.")
+            pass # Użyj domyślnego stylu, jeśli ten nie jest dostępny
 
         plt.figure(figsize=(12, 6))
         sns.barplot(data=results_df, x='Dataset', y='RMSE', hue='Model', palette='viridis')
