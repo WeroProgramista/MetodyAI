@@ -45,4 +45,5 @@ Porównujemy klasyczny model statystyczny **ARIMA** (Autoregressive Integrated M
 Do poprawnego działania skryptu potrzebne są następujące biblioteki Pythona. Możesz je zainstalować za pomocą pip:
 
 ```bash
-pip install pandas numpy pandas-ta scikit-learn tensorflow matplotlib seaborn statsmodels pmdarima
+pip install pandas numpy pandas-ta scikit-learn tensorflow statsmodels pmdarima matplotlib seaborn plotly
+
