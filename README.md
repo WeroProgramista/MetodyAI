@@ -38,7 +38,7 @@ Porównujemy klasyczny model statystyczny **ARIMA** (Autoregressive Integrated M
     python MAIN.py
     ```
 4.  W oknie dialogowym, które się pojawi, wybierz przygotowane 3 pliki CSV.
-5.  Skrypt przetworzy dane, wytrenuje modele, przeprowadzi ewaluację i wyświetli wyniki w konsoli oraz jako wykresy.
+5.  Skrypt przetworzy dane, wytrenuje modele, przeprowadzi ewaluację i zapisze wyniki w folderze **RESULTS**.
 
 ## Wymagane Biblioteki 📚
 
