@@ -1,0 +1,11 @@
+pandas>=1.5.0
+numpy==1.26.4
+ta>=0.7.0
+scikit-learn>=1.0
+tensorflow>=2.8.0
+statsmodels>=0.13.0
+pmdarima>=1.8.4
+matplotlib>=3.4.0
+seaborn>=0.11.0
+tkinter
+pytest>=7.0
