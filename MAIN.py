@@ -16,6 +16,9 @@ import time
 import tkinter as tk
 from tkinter import filedialog
 import sys # To exit if files are not selected correctly
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+import os
 
 # Ignorowanie ostrzeżeń dla czytelności
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -59,6 +62,8 @@ all_results = []
 
 # --- Funkcja do Ewaluacji Modeli Regresyjnych ---
 def evaluate_regression_model(name, dataset_name, y_true, y_pred):
+
+
     """Oblicza i drukuje metryki regresji, zapisuje wyniki."""
     mae = mean_absolute_error(y_true, y_pred)
     mse = mean_squared_error(y_true, y_pred)
@@ -88,6 +93,72 @@ def create_sequences(X, y, time_steps=1):
         Xs.append(v)
         ys.append(y.iloc[i + time_steps])
     return np.array(Xs), np.array(ys)
+
+def plot_combined_predictions(df_plot, y_true, y_naive, y_arima, y_lstm, title):
+    fig = go.Figure()
+
+    # Wykres świecowy (OHLC)
+    fig.add_trace(go.Candlestick(
+        x=df_plot.index,
+        open=df_plot['Open'],
+        high=df_plot['High'],
+        low=df_plot['Low'],
+        close=df_plot['Close'],
+        name='Dane historyczne',
+        increasing_line_color='green',
+        decreasing_line_color='red'
+    ))
+
+    # Rzeczywiste wartości
+    fig.add_trace(go.Scatter(
+        x=y_true.index,
+        y=y_true.values,
+        mode='lines',
+        name='Rzeczywiste',
+        line=dict(color='blue')
+    ))
+
+    # Naive
+    fig.add_trace(go.Scatter(
+        x=y_naive.index,
+        y=y_naive.values,
+        mode='lines',
+        name='Naive',
+        line=dict(color='gray', dash='dot')
+    ))
+
+    # ARIMA
+    fig.add_trace(go.Scatter(
+        x=y_arima.index,
+        y=y_arima.values,
+        mode='lines',
+        name='ARIMA',
+        line=dict(color='purple', dash='dash')
+    ))
+
+    # LSTM
+    fig.add_trace(go.Scatter(
+        x=y_lstm.index,
+        y=y_lstm.values,
+        mode='lines',
+        name='LSTM',
+        line=dict(color='orange')
+    ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title='Data',
+        yaxis_title='Cena',
+        xaxis_rangeslider_visible=False,
+        template='plotly_dark',
+        height=600
+    )
+
+    return fig
+
+# Utworzenie katalogu na wyniki
+RESULTS_DIR = "results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # --- Wybór Plików przez Użytkownika ---
 FILE_PATHS = select_csv_files(num_files=3)
@@ -258,6 +329,9 @@ for file_path in FILE_PATHS:
         y_test_eval_naive = y_test.loc[common_index]
         y_pred_naive_eval = y_pred_naive.loc[common_index]
         evaluate_regression_model('Naive Baseline', dataset_name, y_test_eval_naive, y_pred_naive_eval)
+      
+
+   
 
 
 
@@ -297,6 +371,8 @@ for file_path in FILE_PATHS:
             y_test_eval_arima = y_test.loc[common_index_arima]
             y_pred_arima_eval = y_pred_arima.loc[common_index_arima]
             evaluate_regression_model('ARIMA', dataset_name, y_test_eval_arima, y_pred_arima_eval)
+
+       
 
 
     except Exception as e:
@@ -353,10 +429,12 @@ for file_path in FILE_PATHS:
             end_index_lstm_eval = start_index_lstm_eval + len(y_pred_lstm)
 
             if not y_test.empty and end_index_lstm_eval <= len(y_test):
-                 y_test_eval_lstm = y_test.iloc[start_index_lstm_eval:end_index_lstm_eval]
-                 if len(y_test_eval_lstm) == len(y_pred_lstm):
-                      evaluate_regression_model('LSTM', dataset_name, y_test_eval_lstm, y_pred_lstm)
-                 else:
+                y_test_eval_lstm = y_test.iloc[start_index_lstm_eval:end_index_lstm_eval]
+                if len(y_test_eval_lstm) == len(y_pred_lstm):
+                    evaluate_regression_model('LSTM', dataset_name, y_test_eval_lstm, y_pred_lstm)
+                  
+
+                else:
                       print(f"   OSTRZEŻENIE: Niezgodność długości y_test_eval_lstm ({len(y_test_eval_lstm)}) i y_pred_lstm ({len(y_pred_lstm)}). Pomijanie ewaluacji LSTM.")
                       all_results.append({'Dataset': dataset_name, 'Model': 'LSTM', 'MAE': np.nan, 'MSE': np.nan, 'RMSE': np.nan})
             else:
@@ -367,9 +445,33 @@ for file_path in FILE_PATHS:
     print(f"   Czas LSTM: {time.time() - start_time_lstm:.2f} s")
     print(f"Czas przetwarzania dla {dataset_name}: {time.time() - start_time_dataset:.2f} s")
 
+    try:
+        # Przygotowanie danych i indeksów wspólnych do wykresu świecowego
+        common_index = y_test.index.intersection(y_pred_naive.index).intersection(y_pred_arima.index)
+        common_index = common_index.intersection(y_test.index[TIME_STEPS:])  
+
+        if not common_index.empty:
+            df_plot = df_test.loc[common_index]
+            y_true_final = y_test.loc[common_index]
+            y_naive_final = y_pred_naive.loc[common_index]
+            y_arima_final = y_pred_arima.loc[common_index]
+            y_lstm_final = pd.Series(y_pred_lstm, index=y_test.iloc[TIME_STEPS:TIME_STEPS+len(y_pred_lstm)].index)
+            y_lstm_final = y_lstm_final.loc[common_index]
+
+            fig = plot_combined_predictions(df_plot, y_true_final, y_naive_final, y_arima_final, y_lstm_final,
+                                            title=f"Candlestick + Predykcje: {dataset_name}")
+            fig.write_html(os.path.join(RESULTS_DIR, f"{dataset_name}_combined_forecast.html"))
+
+    except Exception as e:
+        print(f"   OSTRZEŻENIE: Nie udało się wygenerować wykresu zbiorczego dla {dataset_name}: {e}")
+
 
 # --- 10. Podsumowanie Wyników ---
 print(f"\n{'='*30} Podsumowanie Wyników {'='*30}")
+
+# --- Utwórz folder 'results', jeśli nie istnieje ---
+
+
 
 if not all_results:
     print("Brak wyników do podsumowania.")
@@ -377,6 +479,7 @@ else:
     results_df = pd.DataFrame(all_results)
     results_df = results_df.round(4) # Zaokrąglenie metryk
     print(results_df)
+    results_df.to_csv(os.path.join(RESULTS_DIR, "podsumowanie_wynikow.csv"), index=False)
 
     # --- Wizualizacja Porównawcza (ZMODYFIKOWANA) ---
     print("\nGenerowanie wykresów porównawczych dla każdego datasetu...")
@@ -402,7 +505,8 @@ else:
                 plt.xlabel('Model')
                 plt.xticks(rotation=0)
                 plt.tight_layout()
-                plt.show()
+                plt.savefig(os.path.join(RESULTS_DIR, f"{dataset}_RMSE.png"))
+                plt.close()
 
                 # Wykres MAE dla bieżącego datasetu
                 plt.figure(figsize=(8, 5))
@@ -412,7 +516,8 @@ else:
                 plt.xlabel('Model')
                 plt.xticks(rotation=0)
                 plt.tight_layout()
-                plt.show()
+                plt.savefig(os.path.join(RESULTS_DIR, f"{dataset}_MAE.png"))
+                plt.close()
             else:
                 print(f"Brak wystarczających danych liczbowych do wygenerowania wykresów dla datasetu: {dataset}")
 
@@ -420,4 +525,7 @@ else:
         print("Brak wystarczających danych liczbowych do wygenerowania wykresów porównawczych.")
 
 
+
+print(f"\nWszystkie wykresy zapisano w katalogu '{RESULTS_DIR}'.")
+print(f"Podsumowanie wyników zapisano w 'podsumowanie_wynikow.csv' w katalogu '{RESULTS_DIR}'.")
 print("\nAnaliza zakończona.")
